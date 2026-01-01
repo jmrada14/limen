@@ -6,13 +6,16 @@
 //
 
 import Foundation
+import Darwin
 
 /// macOS implementation of PortProviding
 public final class PortProvider: PortProviding, @unchecked Sendable {
     private let networkProvider: NetworkProvider
+    private let processProvider: ProcessProvider
 
-    public init(networkProvider: NetworkProvider = NetworkProvider()) {
+    public init(networkProvider: NetworkProvider = NetworkProvider(), processProvider: ProcessProvider = ProcessProvider()) {
         self.networkProvider = networkProvider
+        self.processProvider = processProvider
     }
 
     // MARK: - PortProviding
@@ -71,6 +74,96 @@ public final class PortProvider: PortProviding, @unchecked Sendable {
             return nil
         }
         return (pid, name)
+    }
+
+    // MARK: - Port Control
+
+    public func closePort(port: UInt16, protocol proto: Port.PortProtocol, force: Bool) async -> PortCloseResult {
+        // First validate the close
+        let validation = await validateClosePort(port: port, protocol: proto, force: force)
+
+        switch validation {
+        case .blocked:
+            return validation
+        case .requiresConfirmation:
+            return validation
+        case .accessDenied, .portNotInUse, .failed:
+            return validation
+        case .success:
+            break
+        }
+
+        return await executeConfirmedClose(port: port, protocol: proto, forceQuit: force)
+    }
+
+    public func validateClosePort(port: UInt16, protocol proto: Port.PortProtocol, force: Bool) async -> PortCloseResult {
+        // Get port info to find the process
+        guard let portInfo = try? await getPortInfo(port: port, protocol: proto) else {
+            return .portNotInUse
+        }
+
+        guard let pid = portInfo.pid else {
+            return .failed(error: "Could not determine which process is using this port")
+        }
+
+        // Get full process info for better classification
+        let process = try? await processProvider.getProcess(pid: pid)
+        let userId = process?.userId
+
+        // Use PortSafety to validate
+        return PortSafety.validateKill(
+            port: port,
+            processName: portInfo.processName,
+            processPid: pid,
+            processUserId: userId,
+            force: force
+        )
+    }
+
+    public func executeConfirmedClose(port: UInt16, protocol proto: Port.PortProtocol, forceQuit: Bool) async -> PortCloseResult {
+        // Get the process using this port
+        guard let portInfo = try? await getPortInfo(port: port, protocol: proto),
+              let pid = portInfo.pid else {
+            return .portNotInUse
+        }
+
+        // Re-check safety (defense in depth)
+        let level = PortSafety.classify(
+            port: port,
+            processName: portInfo.processName,
+            processPid: pid,
+            processUserId: nil
+        )
+
+        if level == .critical {
+            return .blocked(reason: "Critical system port - close blocked for safety")
+        }
+
+        // Delegate to ProcessProvider to kill the process
+        let signal = forceQuit ? SIGKILL : SIGTERM
+        let killResult = await processProvider.executeConfirmedKill(pid: pid, signal: signal)
+
+        // Convert KillResult to PortCloseResult
+        switch killResult {
+        case .success:
+            return .success
+        case .blocked(let reason):
+            return .blocked(reason: reason)
+        case .requiresConfirmation(let level, let message):
+            // Shouldn't happen at this stage, but handle it
+            return .requiresConfirmation(
+                level: PortSafetyLevel(rawValue: level.rawValue) ?? .normal,
+                message: message,
+                processName: portInfo.processName
+            )
+        case .failed(let error):
+            return .failed(error: error)
+        case .accessDenied:
+            return .accessDenied
+        case .processNotFound:
+            // Port may have been closed by another means
+            return .success
+        }
     }
 
     // MARK: - Private Implementation

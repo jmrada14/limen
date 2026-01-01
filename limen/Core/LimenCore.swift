@@ -121,6 +121,31 @@ public final class LimenCore: @unchecked Sendable {
         }
         return process.safetyLevel
     }
+
+    // MARK: - Port Control
+
+    /// Validate if a port can be closed (check safety level)
+    public func validateClosePort(port: UInt16, protocol proto: Port.PortProtocol, force: Bool = false) async -> PortCloseResult {
+        await ports.validateClosePort(port: port, protocol: proto, force: force)
+    }
+
+    /// Close a port by killing the process using it
+    public func closePort(port: UInt16, protocol proto: Port.PortProtocol, force: Bool = false) async -> PortCloseResult {
+        await ports.closePort(port: port, protocol: proto, force: force)
+    }
+
+    /// Execute port close after user has confirmed
+    public func executeConfirmedClosePort(port: UInt16, protocol proto: Port.PortProtocol, forceQuit: Bool = false) async -> PortCloseResult {
+        await ports.executeConfirmedClose(port: port, protocol: proto, forceQuit: forceQuit)
+    }
+
+    /// Get the safety level for a port
+    public func getPortSafetyLevel(port: UInt16, protocol proto: Port.PortProtocol) async -> PortSafetyLevel? {
+        guard let portInfo = try? await ports.getPortInfo(port: port, protocol: proto) else {
+            return nil
+        }
+        return portInfo.safetyLevel
+    }
 }
 
 // MARK: - System Snapshot
@@ -227,6 +252,23 @@ public final class LimenMonitor: ObservableObject {
     public func executeKill(pid: Int32, forceQuit: Bool = false) async -> KillResult {
         let result = await core.executeConfirmedKill(pid: pid, forceQuit: forceQuit)
         // Refresh process list after kill
+        if case .success = result {
+            await refresh()
+        }
+        return result
+    }
+
+    // MARK: - Port Control
+
+    /// Validate if a port can be closed
+    public func validateClosePort(port: UInt16, protocol proto: Port.PortProtocol, force: Bool = false) async -> PortCloseResult {
+        await core.validateClosePort(port: port, protocol: proto, force: force)
+    }
+
+    /// Execute a confirmed port close
+    public func executeClosePort(port: UInt16, protocol proto: Port.PortProtocol, forceQuit: Bool = false) async -> PortCloseResult {
+        let result = await core.executeConfirmedClosePort(port: port, protocol: proto, forceQuit: forceQuit)
+        // Refresh port list after close
         if case .success = result {
             await refresh()
         }

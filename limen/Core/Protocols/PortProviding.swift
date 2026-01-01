@@ -146,6 +146,18 @@ public protocol PortProviding: Sendable {
 
     /// Find which process is using a port
     func findProcess(usingPort port: UInt16, protocol: Port.PortProtocol) async throws -> (pid: Int32, name: String)?
+
+    // MARK: - Port Control
+
+    /// Close a port by killing the process using it
+    /// Returns the result including any safety blocks or confirmation requirements
+    func closePort(port: UInt16, protocol: Port.PortProtocol, force: Bool) async -> PortCloseResult
+
+    /// Validate if a port can be closed without actually closing it
+    func validateClosePort(port: UInt16, protocol: Port.PortProtocol, force: Bool) async -> PortCloseResult
+
+    /// Execute a confirmed port close - only call after user confirmation
+    func executeConfirmedClose(port: UInt16, protocol: Port.PortProtocol, forceQuit: Bool) async -> PortCloseResult
 }
 
 /// Errors that can occur during port operations

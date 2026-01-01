@@ -84,7 +84,7 @@ struct PopoverContentView: View {
             case .network:
                 NetworkView(connections: monitor.connections, stats: monitor.networkStats)
             case .ports:
-                PortsView(ports: monitor.ports)
+                PortsView(ports: monitor.ports, monitor: monitor)
             case .settings:
                 SettingsTabView()
             }
@@ -483,7 +483,12 @@ struct ConnectionRow: View {
 
 struct PortsView: View {
     let ports: [Port]
+    let monitor: LimenMonitor
     @State private var showOnlyListening = true
+    @StateObject private var closeState = PortCloseConfirmationState()
+    @State private var showingResult: Bool = false
+    @State private var resultMessage: String = ""
+    @State private var resultIsError: Bool = false
 
     private var filteredPorts: [Port] {
         if showOnlyListening {
@@ -515,7 +520,11 @@ struct PortsView: View {
                 ScrollView {
                     LazyVStack(spacing: 4) {
                         ForEach(filteredPorts, id: \.id) { port in
-                            PortRow(port: port)
+                            PortRow(
+                                port: port,
+                                onClose: { requestClose(port: port, force: false) },
+                                onForceClose: { requestClose(port: port, force: true) }
+                            )
                         }
                     }
                     .padding(.horizontal, 16)
@@ -523,14 +532,81 @@ struct PortsView: View {
                 }
             }
         }
+        .sheet(isPresented: $closeState.isPresented) {
+            PortCloseConfirmationSheet(
+                state: closeState,
+                onConfirm: executeClose,
+                onCancel: { closeState.reset() }
+            )
+        }
+        .alert(resultIsError ? "Error" : "Success", isPresented: $showingResult) {
+            Button("OK") { showingResult = false }
+        } message: {
+            Text(resultMessage)
+        }
+    }
+
+    private func requestClose(port: Port, force: Bool) {
+        Task {
+            await closeState.presentClose(for: port, forceQuit: force)
+
+            // If it's an ephemeral port (no confirmation needed), execute immediately
+            if case .success = closeState.closeResult {
+                await executeClose(port, force)
+            }
+        }
+    }
+
+    private func executeClose(_ port: Port, _ forceQuit: Bool) async {
+        let result = await monitor.executeClosePort(
+            port: port.number,
+            protocol: port.protocol,
+            forceQuit: forceQuit
+        )
+
+        closeState.reset()
+
+        switch result {
+        case .success:
+            resultMessage = "Port \(port.number) has been closed."
+            resultIsError = false
+            showingResult = true
+        case .accessDenied:
+            resultMessage = "Access denied. You may need administrator privileges."
+            resultIsError = true
+            showingResult = true
+        case .portNotInUse:
+            resultMessage = "Port is no longer in use."
+            resultIsError = false
+            showingResult = true
+        case .failed(let error):
+            resultMessage = "Failed: \(error)"
+            resultIsError = true
+            showingResult = true
+        case .blocked(let reason):
+            resultMessage = reason
+            resultIsError = true
+            showingResult = true
+        case .requiresConfirmation:
+            break
+        }
     }
 }
 
 struct PortRow: View {
     let port: Port
+    let onClose: () -> Void
+    let onForceClose: () -> Void
+    @State private var isHovering = false
 
     var body: some View {
         HStack {
+            // Safety indicator
+            Circle()
+                .fill(safetyColor)
+                .frame(width: 6, height: 6)
+                .help(port.safetyLevel.description)
+
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text("\(port.number)")
@@ -561,7 +637,28 @@ struct PortRow: View {
 
             Spacer()
 
-            if port.connectionCount > 1 {
+            if isHovering && port.canBeClosed {
+                HStack(spacing: 4) {
+                    Button {
+                        onClose()
+                    } label: {
+                        Image(systemName: "xmark.circle")
+                            .font(.system(size: 14))
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Close Port")
+
+                    Button {
+                        onForceClose()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 14))
+                            .foregroundStyle(.red)
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Force Close")
+                }
+            } else if port.connectionCount > 1 {
                 Text("\(port.connectionCount) conn")
                     .font(.system(size: 9))
                     .foregroundStyle(.secondary)
@@ -569,8 +666,55 @@ struct PortRow: View {
         }
         .padding(.vertical, 6)
         .padding(.horizontal, 8)
-        .background(Color.primary.opacity(0.03))
+        .background(isHovering ? Color.primary.opacity(0.08) : Color.primary.opacity(0.03))
         .cornerRadius(6)
+        .onHover { hovering in
+            withAnimation(.easeInOut(duration: 0.15)) {
+                isHovering = hovering
+            }
+        }
+        .contextMenu {
+            if port.canBeClosed {
+                Button("Close Port") {
+                    onClose()
+                }
+                Button("Force Close") {
+                    onForceClose()
+                }
+                Divider()
+            }
+            Button("Copy Port Number") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString("\(port.number)", forType: .string)
+            }
+            if let processName = port.processName {
+                Button("Copy Process Name") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(processName, forType: .string)
+                }
+            }
+            if let pid = port.pid {
+                Button("Copy PID") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString("\(pid)", forType: .string)
+                }
+            }
+            if port.safetyLevel == .critical {
+                Divider()
+                Text("Critical system port - cannot be closed")
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var safetyColor: Color {
+        switch port.safetyLevel {
+        case .critical: return .red
+        case .system: return .orange
+        case .important: return .yellow
+        case .normal: return .green
+        case .ephemeral: return .gray
+        }
     }
 }
 
