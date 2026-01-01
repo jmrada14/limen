@@ -9,17 +9,20 @@ import SwiftUI
 
 struct PopoverContentView: View {
     @Binding var isDetached: Bool
+    @StateObject private var monitor = LimenMonitor()
     @State private var selectedTab: Tab = .processes
 
     enum Tab: String, CaseIterable {
         case processes = "Processes"
         case network = "Network"
+        case ports = "Ports"
         case settings = "Settings"
 
         var icon: String {
             switch self {
             case .processes: return "cpu"
             case .network: return "network"
+            case .ports: return "door.left.hand.open"
             case .settings: return "gear"
             }
         }
@@ -34,6 +37,12 @@ struct PopoverContentView: View {
             footer
         }
         .frame(minWidth: 300, minHeight: 350)
+        .onAppear {
+            monitor.startMonitoring(interval: 2.0)
+        }
+        .onDisappear {
+            monitor.stopMonitoring()
+        }
     }
 
     private var header: some View {
@@ -43,6 +52,15 @@ struct PopoverContentView: View {
                 .fontWeight(.semibold)
 
             Spacer()
+
+            if let stats = monitor.networkStats {
+                HStack(spacing: 8) {
+                    Label(LimenCore.formatBytesPerSecond(stats.bytesInPerSecond), systemImage: "arrow.down")
+                    Label(LimenCore.formatBytesPerSecond(stats.bytesOutPerSecond), systemImage: "arrow.up")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
@@ -60,15 +78,15 @@ struct PopoverContentView: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 8)
 
-            ScrollView {
-                switch selectedTab {
-                case .processes:
-                    ProcessesPlaceholderView()
-                case .network:
-                    NetworkPlaceholderView()
-                case .settings:
-                    SettingsPlaceholderView()
-                }
+            switch selectedTab {
+            case .processes:
+                ProcessesView(processes: monitor.processes)
+            case .network:
+                NetworkView(connections: monitor.connections, stats: monitor.networkStats)
+            case .ports:
+                PortsView(ports: monitor.ports)
+            case .settings:
+                SettingsTabView()
             }
         }
     }
@@ -76,12 +94,18 @@ struct PopoverContentView: View {
     private var footer: some View {
         HStack {
             Circle()
-                .fill(.green)
+                .fill(monitor.isMonitoring ? .green : .red)
                 .frame(width: 8, height: 8)
 
-            Text("Monitoring active")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            if let lastUpdated = monitor.lastUpdated {
+                Text("Updated \(lastUpdated.formatted(.relative(presentation: .numeric)))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text(monitor.isMonitoring ? "Monitoring..." : "Stopped")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
 
             Spacer()
 
@@ -96,47 +120,328 @@ struct PopoverContentView: View {
     }
 }
 
-struct ProcessesPlaceholderView: View {
-    var body: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "cpu")
-                .font(.system(size: 40))
-                .foregroundStyle(.secondary)
+// MARK: - Processes View
 
-            Text("Process Monitor")
-                .font(.headline)
+struct ProcessesView: View {
+    let processes: [Process]
+    @State private var searchText = ""
+    @State private var sortOrder: SortOrder = .cpu
 
-            Text("Process information will be displayed here.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
+    enum SortOrder: String, CaseIterable {
+        case cpu = "CPU"
+        case memory = "Memory"
+        case name = "Name"
+    }
+
+    private var filteredProcesses: [Process] {
+        var result = processes
+
+        if !searchText.isEmpty {
+            result = result.filter {
+                $0.name.localizedCaseInsensitiveContains(searchText)
+            }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding()
+
+        switch sortOrder {
+        case .cpu:
+            result.sort { $0.cpuUsage > $1.cpuUsage }
+        case .memory:
+            result.sort { $0.memoryBytes > $1.memoryBytes }
+        case .name:
+            result.sort { $0.name.lowercased() < $1.name.lowercased() }
+        }
+
+        return Array(result.prefix(50))
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                TextField("Search processes...", text: $searchText)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.caption)
+
+                Picker("Sort", selection: $sortOrder) {
+                    ForEach(SortOrder.allCases, id: \.self) { order in
+                        Text(order.rawValue).tag(order)
+                    }
+                }
+                .pickerStyle(.menu)
+                .fixedSize()
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+
+            if processes.isEmpty {
+                ContentUnavailableView("Loading...", systemImage: "cpu")
+                    .frame(maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 4) {
+                        ForEach(filteredProcesses, id: \.id) { process in
+                            ProcessRow(process: process)
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                }
+            }
+        }
     }
 }
 
-struct NetworkPlaceholderView: View {
+struct ProcessRow: View {
+    let process: Process
+
     var body: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "network")
-                .font(.system(size: 40))
-                .foregroundStyle(.secondary)
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(process.name)
+                    .font(.system(.caption, design: .monospaced))
+                    .fontWeight(.medium)
+                    .lineLimit(1)
 
-            Text("Network Monitor")
-                .font(.headline)
+                Text("PID: \(process.id) • \(process.user)")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
 
-            Text("Network connections will be displayed here.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
+            Spacer()
+
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(LimenCore.formatBytes(process.memoryBytes))
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.secondary)
+
+                Text(LimenCore.formatPercent(process.memoryPercent))
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.blue)
+            }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding()
+        .padding(.vertical, 4)
+        .padding(.horizontal, 8)
+        .background(Color.primary.opacity(0.03))
+        .cornerRadius(6)
     }
 }
 
-struct SettingsPlaceholderView: View {
+// MARK: - Network View
+
+struct NetworkView: View {
+    let connections: [NetworkConnection]
+    let stats: NetworkStats?
+    @State private var filterState: NetworkConnection.ConnectionState? = nil
+
+    private var filteredConnections: [NetworkConnection] {
+        guard let state = filterState else { return connections }
+        return connections.filter { $0.state == state }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if let stats = stats {
+                HStack(spacing: 16) {
+                    StatBadge(label: "Connections", value: "\(stats.activeConnections)")
+                    StatBadge(label: "In", value: LimenCore.formatBytes(stats.totalBytesIn))
+                    StatBadge(label: "Out", value: LimenCore.formatBytes(stats.totalBytesOut))
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+            }
+
+            HStack {
+                Text("Filter:")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Picker("State", selection: $filterState) {
+                    Text("All").tag(nil as NetworkConnection.ConnectionState?)
+                    Text("Established").tag(NetworkConnection.ConnectionState.established as NetworkConnection.ConnectionState?)
+                    Text("Listen").tag(NetworkConnection.ConnectionState.listen as NetworkConnection.ConnectionState?)
+                }
+                .pickerStyle(.menu)
+                .fixedSize()
+
+                Spacer()
+            }
+            .padding(.horizontal, 16)
+
+            if connections.isEmpty {
+                ContentUnavailableView("Loading...", systemImage: "network")
+                    .frame(maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 4) {
+                        ForEach(filteredConnections.prefix(50), id: \.id) { connection in
+                            ConnectionRow(connection: connection)
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                }
+            }
+        }
+    }
+}
+
+struct ConnectionRow: View {
+    let connection: NetworkConnection
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(connection.processName ?? "Unknown")
+                    .font(.system(.caption, design: .monospaced))
+                    .fontWeight(.medium)
+
+                Spacer()
+
+                Text(connection.state.rawValue)
+                    .font(.system(size: 9))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(stateColor.opacity(0.2))
+                    .foregroundStyle(stateColor)
+                    .cornerRadius(4)
+            }
+
+            HStack {
+                Text("\(connection.localEndpoint)")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.secondary)
+
+                if !connection.remoteAddress.isEmpty && connection.remoteAddress != "*" {
+                    Image(systemName: "arrow.right")
+                        .font(.system(size: 8))
+                        .foregroundStyle(.tertiary)
+
+                    Text("\(connection.remoteEndpoint)")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Text(connection.protocol.rawValue)
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .padding(.vertical, 6)
+        .padding(.horizontal, 8)
+        .background(Color.primary.opacity(0.03))
+        .cornerRadius(6)
+    }
+
+    private var stateColor: Color {
+        switch connection.state {
+        case .established: return .green
+        case .listen: return .blue
+        case .timeWait, .closeWait: return .orange
+        case .closed: return .red
+        default: return .secondary
+        }
+    }
+}
+
+// MARK: - Ports View
+
+struct PortsView: View {
+    let ports: [Port]
+    @State private var showOnlyListening = true
+
+    private var filteredPorts: [Port] {
+        if showOnlyListening {
+            return ports.filter { $0.state == .listening }
+        }
+        return ports
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Toggle("Listening only", isOn: $showOnlyListening)
+                    .font(.caption)
+                    .toggleStyle(.checkbox)
+
+                Spacer()
+
+                Text("\(filteredPorts.count) ports")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+
+            if ports.isEmpty {
+                ContentUnavailableView("Loading...", systemImage: "door.left.hand.open")
+                    .frame(maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 4) {
+                        ForEach(filteredPorts, id: \.id) { port in
+                            PortRow(port: port)
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                }
+            }
+        }
+    }
+}
+
+struct PortRow: View {
+    let port: Port
+
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text("\(port.number)")
+                        .font(.system(.caption, design: .monospaced))
+                        .fontWeight(.semibold)
+
+                    Text(port.protocol.rawValue)
+                        .font(.system(size: 9, design: .monospaced))
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(Color.blue.opacity(0.15))
+                        .foregroundStyle(.blue)
+                        .cornerRadius(3)
+
+                    if let service = port.serviceName {
+                        Text(service)
+                            .font(.system(size: 10))
+                            .foregroundStyle(.orange)
+                    }
+                }
+
+                if let processName = port.processName {
+                    Text("\(processName) (PID: \(port.pid ?? 0))")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Spacer()
+
+            if port.connectionCount > 1 {
+                Text("\(port.connectionCount) conn")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.vertical, 6)
+        .padding(.horizontal, 8)
+        .background(Color.primary.opacity(0.03))
+        .cornerRadius(6)
+    }
+}
+
+// MARK: - Settings Tab View
+
+struct SettingsTabView: View {
     var body: some View {
         VStack(spacing: 16) {
             Image(systemName: "gear")
@@ -146,17 +451,43 @@ struct SettingsPlaceholderView: View {
             Text("Settings")
                 .font(.headline)
 
-            Text("Configuration options will be available here.")
+            Text("Use ⌘, to open settings window")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
+
+            Button("Open Settings") {
+                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+            }
+            .buttonStyle(.borderedProminent)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding()
     }
 }
 
+// MARK: - Helper Views
+
+struct StatBadge: View {
+    let label: String
+    let value: String
+
+    var body: some View {
+        VStack(spacing: 2) {
+            Text(value)
+                .font(.system(.caption, design: .monospaced))
+                .fontWeight(.medium)
+            Text(label)
+                .font(.system(size: 9))
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(Color.primary.opacity(0.05))
+        .cornerRadius(6)
+    }
+}
+
 #Preview {
     PopoverContentView(isDetached: .constant(false))
-        .frame(width: 320, height: 400)
+        .frame(width: 360, height: 450)
 }
