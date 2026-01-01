@@ -2,31 +2,83 @@
 //  limenApp.swift
 //  limen
 //
-//  Created by Juan Manuel Rada Leon on 1/1/26.
+//  A menubar application for process and network monitoring.
 //
 
 import SwiftUI
-import SwiftData
 
 @main
-struct limenApp: App {
-    var sharedModelContainer: ModelContainer = {
-        let schema = Schema([
-            Item.self,
-        ])
-        let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
-
-        do {
-            return try ModelContainer(for: schema, configurations: [modelConfiguration])
-        } catch {
-            fatalError("Could not create ModelContainer: \(error)")
-        }
-    }()
+struct LimenApp: App {
+    @State private var isDetached = false
 
     var body: some Scene {
-        WindowGroup {
-            ContentView()
+        MenuBarExtra {
+            PopoverContentView(isDetached: $isDetached)
+                .frame(width: 320, height: 400)
+        } label: {
+            Image(systemName: "network")
         }
-        .modelContainer(sharedModelContainer)
+        .menuBarExtraStyle(.window)
+
+        Settings {
+            SettingsView()
+        }
+    }
+}
+
+struct SettingsView: View {
+    var body: some View {
+        TabView {
+            GeneralSettingsView()
+                .tabItem {
+                    Label("General", systemImage: "gear")
+                }
+
+            ProcessSettingsView()
+                .tabItem {
+                    Label("Processes", systemImage: "cpu")
+                }
+
+            NetworkSettingsView()
+                .tabItem {
+                    Label("Network", systemImage: "network")
+                }
+        }
+        .frame(width: 450, height: 300)
+    }
+}
+
+struct GeneralSettingsView: View {
+    @AppStorage("launchAtLogin") private var launchAtLogin = false
+
+    var body: some View {
+        Form {
+            Toggle("Launch at Login", isOn: $launchAtLogin)
+        }
+        .padding()
+    }
+}
+
+struct ProcessSettingsView: View {
+    @AppStorage("refreshInterval") private var refreshInterval = 2.0
+
+    var body: some View {
+        Form {
+            Slider(value: $refreshInterval, in: 1...10, step: 1) {
+                Text("Refresh Interval: \(Int(refreshInterval))s")
+            }
+        }
+        .padding()
+    }
+}
+
+struct NetworkSettingsView: View {
+    @AppStorage("monitorAllConnections") private var monitorAllConnections = true
+
+    var body: some View {
+        Form {
+            Toggle("Monitor All Connections", isOn: $monitorAllConnections)
+        }
+        .padding()
     }
 }

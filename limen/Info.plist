@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Make this a menubar-only app (no dock icon) -->
+    <key>LSUIElement</key>
+    <true/>
+
+    <!-- App can be activated programmatically -->
+    <key>NSSupportsAutomaticTermination</key>
+    <false/>
+
+    <!-- Prevent sudden termination to ensure clean shutdown -->
+    <key>NSSupportsSuddenTermination</key>
+    <false/>
+
+    <!-- Background app that can show UI when needed -->
+    <key>LSBackgroundOnly</key>
+    <false/>
+</dict>
+</plist>

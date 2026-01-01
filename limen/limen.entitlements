@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- App Sandbox - set to false if you need full system access for process monitoring -->
+    <key>com.apple.security.app-sandbox</key>
+    <false/>
+
+    <!-- Hardened Runtime Entitlements -->
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <false/>
+
+    <!-- Network Access -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+    <key>com.apple.security.network.server</key>
+    <true/>
+
+    <!-- For reading process information via sysctl/proc APIs -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <false/>
+
+    <!-- Automation/Scripting (if needed for AppleScript integration) -->
+    <key>com.apple.security.automation.apple-events</key>
+    <true/>
+</dict>
+</plist>
