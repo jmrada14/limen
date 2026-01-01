@@ -80,7 +80,7 @@ struct PopoverContentView: View {
 
             switch selectedTab {
             case .processes:
-                ProcessesView(processes: monitor.processes)
+                ProcessesView(processes: monitor.processes, monitor: monitor)
             case .network:
                 NetworkView(connections: monitor.connections, stats: monitor.networkStats)
             case .ports:
@@ -124,8 +124,13 @@ struct PopoverContentView: View {
 
 struct ProcessesView: View {
     let processes: [Process]
+    let monitor: LimenMonitor
     @State private var searchText = ""
     @State private var sortOrder: SortOrder = .cpu
+    @StateObject private var killState = KillConfirmationState()
+    @State private var showingResult: Bool = false
+    @State private var resultMessage: String = ""
+    @State private var resultIsError: Bool = false
 
     enum SortOrder: String, CaseIterable {
         case cpu = "CPU"
@@ -179,7 +184,11 @@ struct ProcessesView: View {
                 ScrollView {
                     LazyVStack(spacing: 4) {
                         ForEach(filteredProcesses, id: \.id) { process in
-                            ProcessRow(process: process)
+                            ProcessRow(
+                                process: process,
+                                onQuit: { requestKill(process: process, force: false) },
+                                onForceQuit: { requestKill(process: process, force: true) }
+                            )
                         }
                     }
                     .padding(.horizontal, 16)
@@ -187,14 +196,78 @@ struct ProcessesView: View {
                 }
             }
         }
+        .sheet(isPresented: $killState.isPresented) {
+            KillConfirmationSheet(
+                state: killState,
+                onConfirm: executeKill,
+                onCancel: { killState.reset() }
+            )
+        }
+        .alert(resultIsError ? "Error" : "Success", isPresented: $showingResult) {
+            Button("OK") { showingResult = false }
+        } message: {
+            Text(resultMessage)
+        }
+    }
+
+    private func requestKill(process: Process, force: Bool) {
+        Task {
+            await killState.presentKill(for: process, forceQuit: force)
+
+            // If it's a background process (no confirmation needed), execute immediately
+            if case .success = killState.killResult {
+                await executeKill(process, force)
+            }
+        }
+    }
+
+    private func executeKill(_ process: Process, _ forceQuit: Bool) async {
+        let result = await monitor.executeKill(pid: process.id, forceQuit: forceQuit)
+
+        killState.reset()
+
+        switch result {
+        case .success:
+            resultMessage = "'\(process.name)' has been terminated."
+            resultIsError = false
+            showingResult = true
+        case .accessDenied:
+            resultMessage = "Access denied. You may need administrator privileges."
+            resultIsError = true
+            showingResult = true
+        case .processNotFound:
+            resultMessage = "Process no longer exists."
+            resultIsError = false
+            showingResult = true
+        case .failed(let error):
+            resultMessage = "Failed: \(error)"
+            resultIsError = true
+            showingResult = true
+        case .blocked(let reason):
+            resultMessage = reason
+            resultIsError = true
+            showingResult = true
+        case .requiresConfirmation:
+            // Shouldn't happen here
+            break
+        }
     }
 }
 
 struct ProcessRow: View {
     let process: Process
+    let onQuit: () -> Void
+    let onForceQuit: () -> Void
+    @State private var isHovering = false
 
     var body: some View {
         HStack {
+            // Safety indicator
+            Circle()
+                .fill(safetyColor)
+                .frame(width: 6, height: 6)
+                .help(process.safetyLevel.description)
+
             VStack(alignment: .leading, spacing: 2) {
                 Text(process.name)
                     .font(.system(.caption, design: .monospaced))
@@ -208,20 +281,82 @@ struct ProcessRow: View {
 
             Spacer()
 
-            VStack(alignment: .trailing, spacing: 2) {
-                Text(LimenCore.formatBytes(process.memoryBytes))
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(.secondary)
+            if isHovering && process.canBeKilled {
+                HStack(spacing: 4) {
+                    Button {
+                        onQuit()
+                    } label: {
+                        Image(systemName: "xmark.circle")
+                            .font(.system(size: 14))
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Quit")
 
-                Text(LimenCore.formatPercent(process.memoryPercent))
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(.blue)
+                    Button {
+                        onForceQuit()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 14))
+                            .foregroundStyle(.red)
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Force Quit")
+                }
+            } else {
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(LimenCore.formatBytes(process.memoryBytes))
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.secondary)
+
+                    Text(LimenCore.formatPercent(process.memoryPercent))
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.blue)
+                }
             }
         }
         .padding(.vertical, 4)
         .padding(.horizontal, 8)
-        .background(Color.primary.opacity(0.03))
+        .background(isHovering ? Color.primary.opacity(0.08) : Color.primary.opacity(0.03))
         .cornerRadius(6)
+        .onHover { hovering in
+            withAnimation(.easeInOut(duration: 0.15)) {
+                isHovering = hovering
+            }
+        }
+        .contextMenu {
+            if process.canBeKilled {
+                Button("Quit") {
+                    onQuit()
+                }
+                Button("Force Quit") {
+                    onForceQuit()
+                }
+                Divider()
+            }
+            Button("Copy PID") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString("\(process.id)", forType: .string)
+            }
+            Button("Copy Name") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(process.name, forType: .string)
+            }
+            if process.safetyLevel == .critical {
+                Divider()
+                Text("Critical system process - cannot be terminated")
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var safetyColor: Color {
+        switch process.safetyLevel {
+        case .critical: return .red
+        case .system: return .orange
+        case .important: return .yellow
+        case .normal: return .green
+        case .background: return .gray
+        }
     }
 }
 

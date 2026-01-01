@@ -54,6 +54,108 @@ public final class ProcessProvider: ProcessProviding, @unchecked Sendable {
         return buildProcessTree(from: allProcesses)
     }
 
+    // MARK: - Process Control (Kill)
+
+    public func terminateProcess(pid: Int32, force: Bool = false) async -> KillResult {
+        // First validate the kill
+        let validation = await validateKill(pid: pid, force: force)
+
+        switch validation {
+        case .blocked:
+            return validation
+        case .requiresConfirmation:
+            // Return confirmation requirement - caller must confirm before proceeding
+            return validation
+        case .accessDenied, .processNotFound, .failed:
+            return validation
+        case .success:
+            // Proceed with kill
+            break
+        }
+
+        return await performKill(pid: pid, signal: SIGTERM)
+    }
+
+    public func forceQuitProcess(pid: Int32) async -> KillResult {
+        // Validate with force flag
+        let validation = await validateKill(pid: pid, force: true)
+
+        switch validation {
+        case .blocked:
+            return validation
+        case .requiresConfirmation:
+            // Return confirmation requirement
+            return validation
+        case .accessDenied, .processNotFound, .failed:
+            return validation
+        case .success:
+            break
+        }
+
+        return await performKill(pid: pid, signal: SIGKILL)
+    }
+
+    public func validateKill(pid: Int32, force: Bool = false) async -> KillResult {
+        // Get process info
+        guard let process = try? await getProcess(pid: pid) else {
+            return .processNotFound
+        }
+
+        // Check if we have permission (can we send signal 0?)
+        if kill(pid, 0) != 0 {
+            let err = errno
+            if err == EPERM {
+                return .accessDenied
+            } else if err == ESRCH {
+                return .processNotFound
+            }
+        }
+
+        // Use ProcessSafety to validate
+        return ProcessSafety.validateKill(
+            name: process.name,
+            pid: pid,
+            userId: process.userId,
+            force: force
+        )
+    }
+
+    /// Execute a confirmed kill - only call after confirmation received
+    public func executeConfirmedKill(pid: Int32, signal: Int32 = SIGTERM) async -> KillResult {
+        // Re-check that this isn't a critical process (safety net)
+        if let process = try? await getProcess(pid: pid) {
+            let level = ProcessSafety.classify(name: process.name, pid: pid, userId: process.userId)
+            if level == .critical {
+                return .blocked(reason: "Critical system process - kill blocked for safety")
+            }
+        }
+
+        return await performKill(pid: pid, signal: signal)
+    }
+
+    private func performKill(pid: Int32, signal: Int32) async -> KillResult {
+        // Final safety check - never kill PID 0 or 1
+        guard pid > 1 else {
+            return .blocked(reason: "Cannot kill system process with PID \(pid)")
+        }
+
+        let result = kill(pid, signal)
+
+        if result == 0 {
+            return .success
+        } else {
+            let err = errno
+            switch err {
+            case EPERM:
+                return .accessDenied
+            case ESRCH:
+                return .processNotFound
+            default:
+                return .failed(error: String(cString: strerror(err)))
+            }
+        }
+    }
+
     // MARK: - Private Implementation
 
     private func fetchAllProcesses() throws -> [Process] {

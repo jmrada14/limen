@@ -82,6 +82,23 @@ public protocol ProcessProviding: Sendable {
 
     /// Get process tree (hierarchical view)
     func getProcessTree() async throws -> [ProcessTreeNode]
+
+    // MARK: - Process Control (Kill)
+
+    /// Terminate a process gracefully (SIGTERM)
+    /// Returns the result of the kill attempt including any safety blocks
+    func terminateProcess(pid: Int32, force: Bool) async -> KillResult
+
+    /// Force quit a process (SIGKILL) - use with caution
+    /// This bypasses graceful shutdown and may cause data loss
+    func forceQuitProcess(pid: Int32) async -> KillResult
+
+    /// Validate if a process can be killed without actually killing it
+    func validateKill(pid: Int32, force: Bool) async -> KillResult
+
+    /// Execute a kill after user confirmation has been received
+    /// This is the only method that should actually send the kill signal
+    func executeConfirmedKill(pid: Int32, signal: Int32) async -> KillResult
 }
 
 /// Node in a process tree

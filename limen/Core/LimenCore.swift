@@ -90,6 +90,37 @@ public final class LimenCore: @unchecked Sendable {
         // Then try UDP
         return try await ports.findProcess(usingPort: port, protocol: .udp)
     }
+
+    // MARK: - Process Control
+
+    /// Validate if a process can be killed (check safety level)
+    public func validateKill(pid: Int32, force: Bool = false) async -> KillResult {
+        await processes.validateKill(pid: pid, force: force)
+    }
+
+    /// Terminate a process (SIGTERM) - requires confirmation for non-background processes
+    public func terminateProcess(pid: Int32) async -> KillResult {
+        await processes.terminateProcess(pid: pid, force: false)
+    }
+
+    /// Force quit a process (SIGKILL) - requires confirmation, may cause data loss
+    public func forceQuitProcess(pid: Int32) async -> KillResult {
+        await processes.forceQuitProcess(pid: pid)
+    }
+
+    /// Execute kill after user has confirmed - this actually sends the signal
+    public func executeConfirmedKill(pid: Int32, forceQuit: Bool = false) async -> KillResult {
+        let signal = forceQuit ? SIGKILL : SIGTERM
+        return await processes.executeConfirmedKill(pid: pid, signal: signal)
+    }
+
+    /// Get the safety level for a process
+    public func getProcessSafetyLevel(pid: Int32) async -> ProcessSafetyLevel? {
+        guard let process = try? await processes.getProcess(pid: pid) else {
+            return nil
+        }
+        return process.safetyLevel
+    }
 }
 
 // MARK: - System Snapshot
@@ -183,6 +214,23 @@ public final class LimenMonitor: ObservableObject {
         } catch {
             self.lastError = error
         }
+    }
+
+    // MARK: - Process Control
+
+    /// Validate if a process can be killed
+    public func validateKill(pid: Int32, force: Bool = false) async -> KillResult {
+        await core.validateKill(pid: pid, force: force)
+    }
+
+    /// Execute a confirmed kill
+    public func executeKill(pid: Int32, forceQuit: Bool = false) async -> KillResult {
+        let result = await core.executeConfirmedKill(pid: pid, forceQuit: forceQuit)
+        // Refresh process list after kill
+        if case .success = result {
+            await refresh()
+        }
+        return result
     }
 
     deinit {
