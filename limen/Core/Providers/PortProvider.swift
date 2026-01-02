@@ -166,6 +166,90 @@ public final class PortProvider: PortProviding, @unchecked Sendable {
         }
     }
 
+    // MARK: - Bulk Operations
+
+    public func getClosablePorts() async throws -> [Port] {
+        let allPorts = try await listListeningPorts()
+        return allPorts.filter { port in
+            let level = port.safetyLevel
+            // Only return ports that are not critical or system
+            return level != .critical && level != .system
+        }
+    }
+
+    public func closeAllNonCritical(forceQuit: Bool) async -> BulkCloseResult {
+        // Get all listening ports
+        guard let allPorts = try? await listListeningPorts() else {
+            return BulkCloseResult(results: [])
+        }
+
+        // Group ports by PID to avoid killing the same process multiple times
+        var processedPIDs: Set<Int32> = []
+        var results: [BulkCloseResult.PortCloseResultItem] = []
+
+        for port in allPorts {
+            let level = port.safetyLevel
+
+            // Skip critical ports entirely
+            if level == .critical {
+                results.append(BulkCloseResult.PortCloseResultItem(
+                    port: port.number,
+                    protocol: port.protocol,
+                    processName: port.processName,
+                    result: .blocked(reason: "Critical system port"),
+                    safetyLevel: level
+                ))
+                continue
+            }
+
+            // Skip system ports (require individual confirmation)
+            if level == .system {
+                results.append(BulkCloseResult.PortCloseResultItem(
+                    port: port.number,
+                    protocol: port.protocol,
+                    processName: port.processName,
+                    result: .blocked(reason: "System port - requires individual confirmation"),
+                    safetyLevel: level
+                ))
+                continue
+            }
+
+            // Skip if we already killed this process
+            if let pid = port.pid, processedPIDs.contains(pid) {
+                results.append(BulkCloseResult.PortCloseResultItem(
+                    port: port.number,
+                    protocol: port.protocol,
+                    processName: port.processName,
+                    result: .success,
+                    safetyLevel: level
+                ))
+                continue
+            }
+
+            // Execute the close
+            let closeResult = await executeConfirmedClose(
+                port: port.number,
+                protocol: port.protocol,
+                forceQuit: forceQuit
+            )
+
+            // Track the PID if successful
+            if case .success = closeResult, let pid = port.pid {
+                processedPIDs.insert(pid)
+            }
+
+            results.append(BulkCloseResult.PortCloseResultItem(
+                port: port.number,
+                protocol: port.protocol,
+                processName: port.processName,
+                result: closeResult,
+                safetyLevel: level
+            ))
+        }
+
+        return BulkCloseResult(results: results)
+    }
+
     // MARK: - Private Implementation
 
     private func fetchAllPorts() throws -> [Port] {

@@ -158,6 +158,56 @@ public protocol PortProviding: Sendable {
 
     /// Execute a confirmed port close - only call after user confirmation
     func executeConfirmedClose(port: UInt16, protocol: Port.PortProtocol, forceQuit: Bool) async -> PortCloseResult
+
+    // MARK: - Bulk Operations
+
+    /// Get all ports that can be safely closed (non-critical)
+    func getClosablePorts() async throws -> [Port]
+
+    /// Close all non-critical ports - returns results for each port
+    func closeAllNonCritical(forceQuit: Bool) async -> BulkCloseResult
+}
+
+/// Result of bulk port close operation
+public struct BulkCloseResult: Sendable {
+    public let totalAttempted: Int
+    public let succeeded: Int
+    public let failed: Int
+    public let skippedCritical: Int
+    public let skippedSystem: Int
+    public let results: [PortCloseResultItem]
+
+    public struct PortCloseResultItem: Sendable, Identifiable {
+        public let id: UUID
+        public let port: UInt16
+        public let `protocol`: Port.PortProtocol
+        public let processName: String?
+        public let result: PortCloseResult
+        public let safetyLevel: PortSafetyLevel
+
+        public init(port: UInt16, protocol: Port.PortProtocol, processName: String?, result: PortCloseResult, safetyLevel: PortSafetyLevel) {
+            self.id = UUID()
+            self.port = port
+            self.protocol = `protocol`
+            self.processName = processName
+            self.result = result
+            self.safetyLevel = safetyLevel
+        }
+
+        public var succeeded: Bool {
+            if case .success = result { return true }
+            return false
+        }
+    }
+
+    public init(results: [PortCloseResultItem]) {
+        self.results = results
+        self.totalAttempted = results.count
+        self.succeeded = results.filter { $0.succeeded }.count
+        self.failed = results.filter { !$0.succeeded && $0.safetyLevel != .critical && $0.safetyLevel != .system }.count
+        self.skippedCritical = results.filter { $0.safetyLevel == .critical }.count
+        self.skippedSystem = results.filter { $0.safetyLevel == .system }.count
+    }
 }
 
 /// Errors that can occur during port operations

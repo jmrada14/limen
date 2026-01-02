@@ -486,6 +486,7 @@ struct PortsView: View {
     let monitor: LimenMonitor
     @State private var showOnlyListening = true
     @StateObject private var closeState = PortCloseConfirmationState()
+    @StateObject private var bulkCloseState = BulkCloseConfirmationState()
     @State private var showingResult: Bool = false
     @State private var resultMessage: String = ""
     @State private var resultIsError: Bool = false
@@ -497,6 +498,13 @@ struct PortsView: View {
         return ports
     }
 
+    private var closableCount: Int {
+        filteredPorts.filter { port in
+            let level = port.safetyLevel
+            return level != .critical && level != .system
+        }.count
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             HStack {
@@ -505,6 +513,22 @@ struct PortsView: View {
                     .toggleStyle(.checkbox)
 
                 Spacer()
+
+                if closableCount > 0 {
+                    Button {
+                        bulkCloseState.present(allPorts: filteredPorts)
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "xmark.circle")
+                                .font(.system(size: 10))
+                            Text("Close All")
+                                .font(.caption)
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .help("Close all non-critical ports")
+                }
 
                 Text("\(filteredPorts.count) ports")
                     .font(.caption)
@@ -539,11 +563,23 @@ struct PortsView: View {
                 onCancel: { closeState.reset() }
             )
         }
+        .sheet(isPresented: $bulkCloseState.isPresented) {
+            BulkCloseConfirmationSheet(
+                state: bulkCloseState,
+                onConfirm: executeBulkClose,
+                onCancel: { bulkCloseState.reset() }
+            )
+        }
         .alert(resultIsError ? "Error" : "Success", isPresented: $showingResult) {
             Button("OK") { showingResult = false }
         } message: {
             Text(resultMessage)
         }
+    }
+
+    private func executeBulkClose(forceQuit: Bool) async -> BulkCloseResult {
+        let result = await monitor.closeAllNonCriticalPorts(forceQuit: forceQuit)
+        return result
     }
 
     private func requestClose(port: Port, force: Bool) {

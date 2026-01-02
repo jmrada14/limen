@@ -146,6 +146,16 @@ public final class LimenCore: @unchecked Sendable {
         }
         return portInfo.safetyLevel
     }
+
+    /// Get all ports that can be closed (non-critical, non-system)
+    public func getClosablePorts() async throws -> [Port] {
+        try await ports.getClosablePorts()
+    }
+
+    /// Close all non-critical ports
+    public func closeAllNonCriticalPorts(forceQuit: Bool = false) async -> BulkCloseResult {
+        await ports.closeAllNonCritical(forceQuit: forceQuit)
+    }
 }
 
 // MARK: - System Snapshot
@@ -270,6 +280,21 @@ public final class LimenMonitor: ObservableObject {
         let result = await core.executeConfirmedClosePort(port: port, protocol: proto, forceQuit: forceQuit)
         // Refresh port list after close
         if case .success = result {
+            await refresh()
+        }
+        return result
+    }
+
+    /// Get all ports that can be closed
+    public func getClosablePorts() async -> [Port] {
+        (try? await core.getClosablePorts()) ?? []
+    }
+
+    /// Close all non-critical ports
+    public func closeAllNonCriticalPorts(forceQuit: Bool = false) async -> BulkCloseResult {
+        let result = await core.closeAllNonCriticalPorts(forceQuit: forceQuit)
+        // Refresh after bulk close
+        if result.succeeded > 0 {
             await refresh()
         }
         return result
