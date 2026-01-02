@@ -24,18 +24,24 @@ public final class LimenCore: @unchecked Sendable {
     public let network: NetworkProviding
     public let ports: PortProviding
 
+    // MARK: - Anomaly Detection
+
+    public let anomalyDetection: AnomalyDetectionService
+
     // MARK: - Initialization
 
     public init(
         processProvider: ProcessProviding? = nil,
         networkProvider: NetworkProviding? = nil,
-        portProvider: PortProviding? = nil
+        portProvider: PortProviding? = nil,
+        anomalyConfig: AnomalyDetectionConfig? = nil
     ) {
         let netProvider = (networkProvider as? NetworkProvider) ?? NetworkProvider()
 
         self.processes = processProvider ?? ProcessProvider()
         self.network = networkProvider ?? netProvider
         self.ports = portProvider ?? PortProvider(networkProvider: netProvider)
+        self.anomalyDetection = AnomalyDetectionService(config: anomalyConfig ?? AnomalyDetectionConfig())
     }
 
     // MARK: - Convenience Methods
@@ -205,6 +211,11 @@ public final class LimenMonitor: ObservableObject {
     @Published public var lastError: Error?
     @Published public var lastUpdated: Date?
 
+    // Anomaly detection
+    @Published public var anomalies: [Anomaly] = []
+    @Published public var anomalySummary: AnomalySummary = AnomalySummary(anomalies: [])
+    @Published public var anomalyDetectionEnabled: Bool = true
+
     public init(core: LimenCore = .shared) {
         self.core = core
     }
@@ -246,9 +257,89 @@ public final class LimenMonitor: ObservableObject {
             self.networkStats = stats
             self.lastUpdated = Date()
             self.lastError = nil
+
+            // Run anomaly detection
+            if anomalyDetectionEnabled {
+                let detected = core.anomalyDetection.analyze(
+                    processes: procs,
+                    connections: conns,
+                    ports: ports,
+                    networkStats: stats
+                )
+                self.anomalies = detected
+                self.anomalySummary = AnomalySummary(anomalies: detected)
+            }
         } catch {
             self.lastError = error
         }
+    }
+
+    // MARK: - Anomaly Detection Controls
+
+    /// Enable or disable anomaly detection
+    public func setAnomalyDetection(enabled: Bool) {
+        anomalyDetectionEnabled = enabled
+        if !enabled {
+            anomalies = []
+            anomalySummary = AnomalySummary(anomalies: [])
+        }
+    }
+
+    /// Update anomaly detection configuration
+    public func updateAnomalyConfig(_ config: AnomalyDetectionConfig) {
+        core.anomalyDetection.updateConfig(config)
+    }
+
+    /// Get current anomaly configuration
+    public func getAnomalyConfig() -> AnomalyDetectionConfig {
+        core.anomalyDetection.getConfig()
+    }
+
+    /// Reset anomaly baselines (useful after system changes)
+    public func resetAnomalyBaselines() {
+        core.anomalyDetection.resetBaselines()
+        anomalies = []
+        anomalySummary = AnomalySummary(anomalies: [])
+    }
+
+    /// Get anomaly history
+    public func getAnomalyHistory() -> [Anomaly] {
+        core.anomalyDetection.getAnomalyHistory()
+    }
+
+    /// Clear anomaly history
+    public func clearAnomalyHistory() {
+        core.anomalyDetection.clearHistory()
+    }
+
+    /// Check if a process has anomalies
+    public func hasAnomalies(pid: Int32) -> Bool {
+        core.anomalyDetection.isProcessAnomalous(pid)
+    }
+
+    /// Get anomalies for a specific process
+    public func getAnomalies(forPid pid: Int32) -> [Anomaly] {
+        core.anomalyDetection.getAnomaliesForProcess(pid)
+    }
+
+    /// Check if a port has anomalies
+    public func hasAnomalies(port: UInt16) -> Bool {
+        core.anomalyDetection.isPortAnomalous(port)
+    }
+
+    /// Get anomalies for a specific port
+    public func getAnomalies(forPort port: UInt16) -> [Anomaly] {
+        core.anomalyDetection.getAnomaliesForPort(port)
+    }
+
+    /// Get anomalies filtered by category
+    public func getAnomalies(category: AnomalyCategory) -> [Anomaly] {
+        anomalies.filter { $0.category == category }
+    }
+
+    /// Get anomalies filtered by minimum severity
+    public func getAnomalies(minimumSeverity: AnomalySeverity) -> [Anomaly] {
+        anomalies.filter { $0.severity >= minimumSeverity }
     }
 
     // MARK: - Process Control
